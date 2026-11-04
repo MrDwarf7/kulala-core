@@ -1,5 +1,5 @@
 import { encodeRequestUrl } from "./encode-url";
-import { httpRequest } from "./http-client";
+import { httpRequest, type HttpRequestResponse } from "./http-client";
 import { grpcNativeRequest } from "../grpc";
 import { formatGrpcurlCommand } from "../grpc/format";
 import { grpcFlagsFromOperators } from "../grpc/collect-flags";
@@ -99,12 +99,14 @@ import type {
   KulalaRequestErrorResponse,
   KulalaRequestSent,
   KulalaRequestSuccessResponse,
+  KulalaHttpStreamEvent,
   KulalaScriptConsoleLine,
   KulalaSkippedResponse,
   RunnerResponseLike,
   VariableResolver,
 } from "./types";
 import { runOpenAPIFromBlock } from "../openapi/run-block";
+import { parseWebSocketScriptMessages } from "../websocket/script-messages";
 
 export type { RunnerResponseLike } from "./types";
 
@@ -169,6 +171,8 @@ export type DoRequestFromBlockOptions = {
   responseFormat?: KulalaResponseFormatOptions;
   /** Optional jq filter override (block `# @kulala-jq` still wins). */
   jqFilter?: string;
+  /** Live event callback for requests marked with `@kulala-keep-alive-stream`. */
+  onHttpStream?: (event: KulalaHttpStreamEvent) => void;
   /** Nested `$kulala.runRequest()` call stack for recursion detection. */
   runRequestStack?: string[];
 };
@@ -356,7 +360,11 @@ function doRequestResultToPreRequestControlFlow(
   }
   if ("prompt" in item && item.prompt) return item;
   if ("skipped" in item && item.skipped) return item;
-  if (item.success === false && "aborted" in item && item.aborted === true) {
+  if (
+    item.success === false &&
+    (("aborted" in item && item.aborted === true) ||
+      ("cancelled" in item && item.cancelled === true))
+  ) {
     return item;
   }
   return undefined;
@@ -674,6 +682,9 @@ export async function doRequestFromBlock(
   }
 
   scriptReplay: while (true) {
+    if (flow?.cancelled) {
+      return { success: false, cancelled: true, error: "Request cancelled" };
+    }
     if (scriptReplayIndex > MAX_SCRIPT_REPLAYS) {
       return {
         success: false,
@@ -694,6 +705,9 @@ export async function doRequestFromBlock(
         scriptConsole,
         { ...iterationOptions, scriptReplayIndex },
       );
+      if (flow?.cancelled) {
+        return { success: false, cancelled: true, error: "Request cancelled" };
+      }
       if (!isPreRequestScriptsOk(preResult)) {
         return preResult as DoRequestFromBlockResult;
       }
@@ -732,6 +746,7 @@ export async function doRequestFromBlock(
                 doc: iterationOptions?.doc,
                 responseFormat: iterationOptions?.responseFormat,
                 jqFilter: iterationOptions?.jqFilter,
+                onHttpStream: iterationOptions?.onHttpStream,
               },
             );
             const one = Array.isArray(child) ? child[0]! : child;
@@ -1032,11 +1047,13 @@ export async function doRequestFromBlock(
           : body != null
             ? JSON.stringify(body)
             : "";
+      const script = parseWebSocketScriptMessages(bodyStr);
       return {
         success: true,
         protocol: "websocket",
         url,
-        initialMessage: bodyStr || undefined,
+        initialMessage: script ? script.initialMessage : bodyStr || undefined,
+        ...(script ? { messages: script.messages } : {}),
         request: buildSentRequestSnapshot(
           methodUpper,
           url,
@@ -1205,17 +1222,63 @@ export async function doRequestFromBlock(
         }
       }
 
-      const res = await httpRequest({
-        url,
-        method,
-        headers: requestHeaders,
-        body: bodyPayload,
-        httpVersion: block.request.httpVersion,
-        followRedirects,
-        propagateCookiesOnRedirect: cookieJarEnabled,
-        cookieJarEnabled,
-        extraCurlArgv,
-      });
+      const onHttpStream = hasOp(["kulala-keep-alive-stream"])
+        ? (iterationOptions?.onHttpStream ?? flow?.onHttpStream)
+        : undefined;
+      let streamOutputFailed = false;
+      const emitHttpStream = (event: KulalaHttpStreamEvent): void => {
+        if (!onHttpStream) return;
+        try {
+          onHttpStream(event);
+        } catch (error) {
+          streamOutputFailed = true;
+          throw error;
+        }
+      };
+      let res: HttpRequestResponse;
+      try {
+        res = await httpRequest({
+          url,
+          method,
+          headers: requestHeaders,
+          body: bodyPayload,
+          httpVersion: block.request.httpVersion,
+          followRedirects,
+          propagateCookiesOnRedirect: cookieJarEnabled,
+          cookieJarEnabled,
+          extraCurlArgv,
+          onStream: onHttpStream
+            ? {
+                onHeaders: ({ statusCode, headers, url: responseUrl }) =>
+                  emitHttpStream({
+                    type: "http-stream",
+                    event: "headers",
+                    blockName: block.name,
+                    status: statusCode,
+                    headers,
+                    url: responseUrl,
+                  }),
+                onChunk: (data) =>
+                  emitHttpStream({
+                    type: "http-stream",
+                    event: "chunk",
+                    blockName: block.name,
+                    data,
+                  }),
+              }
+            : undefined,
+        });
+      } catch (error) {
+        if (onHttpStream && !streamOutputFailed) {
+          emitHttpStream({
+            type: "http-stream",
+            event: "error",
+            blockName: block.name,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        throw error;
+      }
 
       const rawBody = res.body;
 
@@ -1543,9 +1606,13 @@ export async function doRequestFromBlock(
         ...(scriptConsole.length > 0 ? { scriptConsole } : {}),
       } as KulalaRequestSuccessResponse;
     } catch (error) {
+      const cancelled =
+        error instanceof DOMException && error.name === "AbortError";
+      if (cancelled && flow) flow.cancelled = true;
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error),
+        ...(cancelled ? { cancelled: true } : {}),
         ...(scriptConsole.length > 0 ? { scriptConsole } : {}),
       } as KulalaRequestErrorResponse;
     }

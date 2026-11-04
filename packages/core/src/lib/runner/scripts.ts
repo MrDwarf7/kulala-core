@@ -1,6 +1,7 @@
 import path from "path";
 import type { KulalaBlock } from "./../parser/types/block";
 import type {
+  KulalaHttpStreamEvent,
   KulalaScriptConsoleLine,
   KulalaScriptConsoleOrigin,
   RunnerResponseLike,
@@ -62,6 +63,8 @@ export type ScriptRunScope = {
 export type ScriptFlowContext = {
   /** "Execution flow" local headers (not persisted). */
   globalHeaders: Record<string, string>;
+  onHttpStream?: (event: KulalaHttpStreamEvent) => void;
+  cancelled?: boolean;
   /** `# @grpc-*` from KULALA_SHARED blocks in the document. */
   sharedGrpcFlags?: KulalaGrpcFlag[];
   /** `### KULALA_SHARED` / `### KULALA_SHARED_EACH` blocks (scripts run around each request). */

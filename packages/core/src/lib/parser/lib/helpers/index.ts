@@ -20,8 +20,12 @@ export function writePayloadToFd(
   fd: number,
   payload: unknown,
   trailingNewline = false,
+  compact = false,
 ): void {
-  const text = JSON.stringify(payload, null, 2) + (trailingNewline ? "\n" : "");
+  const serialized = compact
+    ? JSON.stringify(payload)
+    : JSON.stringify(payload, null, 2);
+  const text = serialized + (trailingNewline ? "\n" : "");
   const buffer = Buffer.from(text);
   let offset = 0;
   while (offset < buffer.length) {
@@ -39,6 +43,10 @@ export function writePayloadToFd(
     }
   }
 }
+
+export const writeCompactJsonLineToStdout = (payload: unknown): void => {
+  writePayloadToFd(1, payload, true, true);
+};
 
 export const writeRequestResponseToStderr = async (
   res: unknown,

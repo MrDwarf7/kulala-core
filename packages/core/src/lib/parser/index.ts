@@ -3,6 +3,7 @@ import type { KulalaStdinParsed } from "./types/stdinparsed";
 import { KulalaRunner } from "./../runner";
 import {
   writeErrorToStderr,
+  writeCompactJsonLineToStdout,
   writeRequestResponseToStdout,
   writeToStdout,
 } from "./lib/helpers";
@@ -103,6 +104,7 @@ const kulalaParser: KulalaParser = {
           responseFormat: stdIn.responseFormat,
           jqFilter: stdIn.jqFilter,
           haltOnError: stdIn.haltOnError,
+          onHttpStream: writeCompactJsonLineToStdout,
         });
         break;
       }

@@ -44,6 +44,7 @@ export type {
   KulalaRequestSuccessResponse,
   KulalaResponseWrapper,
   KulalaScriptConsoleLine,
+  KulalaHttpStreamEvent,
   KulalaScriptConsoleOrigin,
 } from "./types";
 
@@ -58,6 +59,7 @@ function shouldHaltAfterResult(
   item: RunResultItem,
   haltOnError: boolean | undefined,
 ): boolean {
+  if (!item.success && "cancelled" in item && item.cancelled) return true;
   if (!haltOnError || item.success !== false) {
     return false;
   }
@@ -124,6 +126,7 @@ export async function runDocument(
   )[] = [];
   const flow: ScriptFlowContext = {
     globalHeaders: {},
+    onHttpStream: options?.onHttpStream,
     sharedGrpcFlags: collectSharedGrpcFlags(doc.blocks),
     sharedBlocks: doc.blocks.filter((b) => isSharedBlockName(b.name)),
     sharedHttpExecuted: new Set(),
@@ -174,6 +177,7 @@ export async function runDocument(
         doc,
         responseFormat: options?.responseFormat,
         jqFilter: options?.jqFilter,
+        onHttpStream: options?.onHttpStream,
       },
     );
 
@@ -236,6 +240,7 @@ export async function runDocument(
         );
       }
     }
+    if (flow.cancelled) break;
   }
   const responseWrapper: KulalaResponseWrapper = {
     type: "responses",

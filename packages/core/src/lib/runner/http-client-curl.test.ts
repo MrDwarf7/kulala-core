@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { createServer } from "node:http";
 import {
+  createServer as createTcpServer,
+  type Server as TcpServer,
+  type Socket,
+} from "node:net";
+import {
   createServer as createHttp2Server,
   type Http2Server,
   type ServerHttp2Stream,
@@ -26,6 +31,15 @@ function listenHttp(server: ReturnType<typeof createServer>): Promise<number> {
       else reject(new Error("no address"));
     });
   });
+}
+function listenTcp(server: TcpServer): Promise<number> {
+  const { promise, resolve, reject } = Promise.withResolvers<number>();
+  server.listen(0, "127.0.0.1", () => {
+    const addr = server.address();
+    if (addr && typeof addr === "object") resolve(addr.port);
+    else reject(new Error("no address"));
+  });
+  return promise;
 }
 
 function listenHttp2(server: Http2Server): Promise<number> {
@@ -278,6 +292,134 @@ describe("curl transport", () => {
     };
     expect(parsed.raw).toBe('{"foo":"bar"}');
     expect(parsed.contentType).toBeNull();
+  });
+  test("streams response headers and UTF-8 chunks before the transfer ends", async () => {
+    if (!(await hasCurl())) return;
+
+    let serverEnded = false;
+    let streamedWhileServerOpen = false;
+    let peer: Socket;
+    const chunks: string[] = [];
+    const events: string[] = [];
+    const sockets = new Set<Socket>();
+    const server = createTcpServer((socket) => {
+      peer = socket;
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+      socket.on("error", () => {});
+      socket.once("data", () => {
+        socket.write(
+          "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-T",
+        );
+        socket.write(
+          Buffer.concat([
+            Buffer.from(
+              "ype: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\n",
+            ),
+            Buffer.from([0xe2]),
+          ]),
+        );
+      });
+    });
+    const port = await listenTcp(server);
+    try {
+      const response = await httpRequest({
+        url: `http://127.0.0.1:${port}/`,
+        method: "GET",
+        headers: {},
+        timeoutSec: 3,
+        onStream: {
+          onHeaders: (headers) => {
+            events.push("headers");
+            expect(headers.statusCode).toBe(200);
+            // The next UTF-8 bytes are sent only after the first bytes reach the client.
+            peer.write(Buffer.from([0x98, 0x83]));
+          },
+          onChunk: (text) => {
+            events.push("chunk");
+            chunks.push(text);
+            if (!serverEnded) {
+              streamedWhileServerOpen = true;
+              expect(text).toBe("☃");
+              serverEnded = true;
+              peer.end("done");
+            }
+          },
+        },
+      });
+      expect(response.body.toString("utf8")).toBe("☃done");
+      expect(events[0]).toBe("headers");
+      expect(chunks.join("")).toBe("☃done");
+      expect(streamedWhileServerOpen).toBe(true);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      const { promise, resolve } = Promise.withResolvers<void>();
+      server.close(() => resolve());
+      await promise;
+    }
+  }, 5000);
+
+  test("streams the final response through redirects and an authentication challenge", async () => {
+    if (!(await hasCurl())) return;
+    const statuses: number[] = [];
+    const chunks: string[] = [];
+    const server = createServer((request, response) => {
+      if (request.url === "/redirect") {
+        response.writeHead(302, { location: "/protected" });
+        response.end("redirect body");
+      } else if (!request.headers.authorization) {
+        response.writeHead(401, { "www-authenticate": 'Basic realm="test"' });
+        response.end("challenge body");
+      } else {
+        response.end("authorized");
+      }
+    });
+    const port = await listenHttp(server);
+    try {
+      const response = await httpRequest({
+        url: `http://127.0.0.1:${port}/redirect`,
+        method: "GET",
+        headers: {},
+        timeoutSec: 3,
+        extraCurlArgv: [
+          "--anyauth",
+          "--user",
+          "test:password",
+          "--retry",
+          "1",
+          "--retry",
+          "0",
+        ],
+        onStream: {
+          onHeaders: ({ statusCode }) => statuses.push(statusCode),
+          onChunk: (text) => chunks.push(text),
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(statuses).toEqual([200]);
+      expect(chunks.join("")).toBe("authorized");
+    } finally {
+      server.closeAllConnections();
+      const { promise, resolve } = Promise.withResolvers<void>();
+      server.close(() => resolve());
+      await promise;
+    }
+  });
+
+  test("rejects automatic retries before starting a live stream", async () => {
+    for (const extraCurlArgv of [["--retry", "1"], ["--retry=1"]]) {
+      await expect(
+        httpRequest({
+          url: "http://127.0.0.1:1",
+          method: "GET",
+          headers: {},
+          extraCurlArgv,
+          onStream: { onHeaders() {}, onChunk() {} },
+        }),
+      ).rejects.toThrow(
+        "Live streaming cannot be combined with automatic cURL retries",
+      );
+    }
   });
 });
 

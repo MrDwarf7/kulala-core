@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { access } from "node:fs/promises";
 import type {
   HttpRequestOptions,
@@ -10,7 +11,7 @@ import type {
 } from "./http-client";
 import { resolveCurlPath } from "./embedded-curl";
 import { performance } from "node:perf_hooks";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   cookieAppliesToRequest,
@@ -131,7 +132,7 @@ function stripCookieHeader(headers: Record<string, string>): void {
   }
 }
 
-import { headersFromDump } from "../curl/headers-dump";
+import { headersFromDump, type HeadersDump } from "../curl/headers-dump";
 import { curlHeaderArg } from "../curl/format";
 
 /** Whether curl needs an explicit `--request` / `-X` (avoids verbose "already inferred" notes). */
@@ -175,9 +176,11 @@ function buildTimings(w: CurlWriteOut): HttpRequestTimings {
     },
   };
 }
-
-async function runCurl(args: string[]): Promise<{
-  stdout: string;
+async function runCurl(
+  args: string[],
+  onStdout?: (chunk: Buffer) => void,
+): Promise<{
+  stdout: Buffer;
   stderr: string;
   exitCode: number;
 }> {
@@ -192,29 +195,73 @@ async function runCurl(args: string[]): Promise<{
       // ignore
     }
   }
-  return await new Promise((resolve, reject) => {
-    const child = spawn(curlPath, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      env,
-    });
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    child.stdout.on("data", (c: Buffer) => stdoutChunks.push(c));
-    child.stderr.on("data", (c: Buffer) => stderrChunks.push(c));
-    child.on("error", reject);
-    child.on("close", (code) => {
-      resolve({
-        stdout: Buffer.concat(stdoutChunks).toString("utf-8"),
-        stderr: Buffer.concat(stderrChunks).toString("utf-8"),
-        exitCode: code ?? 0,
-      });
+  const { promise, resolve, reject } = Promise.withResolvers<{
+    stdout: Buffer;
+    stderr: string;
+    exitCode: number;
+  }>();
+  const child = spawn(curlPath, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    env,
+  });
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  let outputError: unknown;
+  const cancel = () => {
+    outputError = new DOMException("Request cancelled", "AbortError");
+    child.kill("SIGTERM");
+  };
+  if (onStdout) {
+    process.once("SIGINT", cancel);
+    process.once("SIGTERM", cancel);
+  }
+  child.stdout.on("data", (chunk: Buffer) => {
+    if (!onStdout) stdoutChunks.push(chunk);
+    if (!onStdout || outputError !== undefined) return;
+    try {
+      onStdout(chunk);
+    } catch (error) {
+      outputError = error;
+      child.kill("SIGTERM");
+    }
+  });
+  child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+  child.on("error", reject);
+  child.on("close", (code) => {
+    if (onStdout) {
+      process.removeListener("SIGINT", cancel);
+      process.removeListener("SIGTERM", cancel);
+    }
+    if (outputError !== undefined) {
+      reject(outputError);
+      return;
+    }
+    resolve({
+      stdout: Buffer.concat(stdoutChunks),
+      stderr: Buffer.concat(stderrChunks).toString("utf-8"),
+      exitCode: code ?? 1,
     });
   });
+  return promise;
 }
 
 export async function curlHttpRequest(
   options: HttpRequestOptions,
 ): Promise<HttpRequestResponse> {
+  if (options.onStream) {
+    const extra = options.extraCurlArgv ?? [];
+    let retries = 0;
+    for (let i = 0; i < extra.length; i++) {
+      if (extra[i] === "--retry") retries = Number(extra[++i]);
+      else if (extra[i]?.startsWith("--retry="))
+        retries = Number(extra[i]!.slice(8));
+    }
+    if (retries > 0) {
+      throw new Error(
+        "Live streaming cannot be combined with automatic cURL retries",
+      );
+    }
+  }
   const MAX_REDIRECTS = 10;
   const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
   const followRedirects = options.followRedirects !== false;
@@ -284,6 +331,36 @@ export async function curlHttpRequest(
       "",
     ].join("\n");
 
+    let responseHeaders: HeadersDump | undefined;
+    const responseBody: Buffer[] = [];
+    let suppressStream = false;
+    const decoder = new StringDecoder("utf8");
+    const startStream = (): void => {
+      if (responseHeaders) return;
+      // Let cURL frame HTTP, proxy and authentication headers; stdout is body-only.
+      responseHeaders = headersFromDump(readFileSync(headerPath, "utf8"));
+      suppressStream =
+        followRedirects &&
+        REDIRECT_STATUSES.has(responseHeaders.statusCode) &&
+        !!responseHeaders.headers.location;
+      if (!suppressStream) {
+        options.onStream?.onHeaders({
+          statusCode: responseHeaders.statusCode,
+          headers: responseHeaders.headers,
+          url: currentUrl,
+        });
+      }
+    };
+    const consumeStdout = (chunk: Buffer): void => {
+      startStream();
+      responseBody.push(chunk);
+      if (!suppressStream) {
+        const text = decoder.write(chunk);
+        if (text) options.onStream?.onChunk(text);
+      }
+    };
+
+    const streaming = options.onStream !== undefined;
     const hasBody = currentBody !== undefined;
     const args: string[] = [
       "--silent",
@@ -292,10 +369,11 @@ export async function curlHttpRequest(
       "--dump-header",
       headerPath,
       "--output",
-      bodyPath,
+      streaming && currentMethod !== "HEAD" ? "-" : bodyPath,
       "--write-out",
-      writeOut,
+      streaming ? `%{stderr}${writeOut}` : writeOut,
     ];
+    if (streaming) args.push("--no-buffer", "--suppress-connect-headers");
 
     if (currentMethod === "HEAD") {
       args.push("--head");
@@ -363,26 +441,41 @@ export async function curlHttpRequest(
     args.push(currentUrl);
 
     try {
-      const { stdout, stderr, exitCode } = await runCurl(args);
+      const { stdout, stderr, exitCode } = await runCurl(
+        args,
+        streaming ? consumeStdout : undefined,
+      );
       if (exitCode !== 0) {
         const msg = stderr.trim() || `curl failed with exit code ${exitCode}`;
         throw new Error(msg);
       }
 
-      const w = parseCurlWriteOut(stdout);
-      const dump = await fs.readFile(headerPath, "utf-8");
-      const { statusCode, headers, httpVersion } = headersFromDump(dump);
-      const body = await fs.readFile(bodyPath);
+      const w = parseCurlWriteOut(
+        streaming ? stderr : stdout.toString("utf-8"),
+      );
+      if (streaming) {
+        startStream();
+        const finalText = decoder.end();
+        if (finalText && !suppressStream) options.onStream?.onChunk(finalText);
+      }
+      const parsedHeaders = headersFromDump(
+        await fs.readFile(headerPath, "utf-8"),
+      );
+      const body = streaming
+        ? Buffer.concat(responseBody)
+        : await fs.readFile(bodyPath);
       const timings = buildTimings(w);
       return {
-        statusCode: statusCode || w.http_code || 0,
-        headers,
+        statusCode: parsedHeaders.statusCode || w.http_code || 0,
+        headers: parsedHeaders.headers,
         body,
         timings,
         url: w.url_effective || currentUrl,
         firstByteTime: 0,
         verboseTrace: stderr,
-        ...(httpVersion ? { httpVersion } : {}),
+        ...(parsedHeaders.httpVersion
+          ? { httpVersion: parsedHeaders.httpVersion }
+          : {}),
       };
     } finally {
       await cleanup();

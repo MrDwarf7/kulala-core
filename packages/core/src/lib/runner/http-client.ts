@@ -6,6 +6,15 @@
 import type { FormDataLike } from "form-data-encoder";
 import { curlHttpRequest } from "./curl-transport";
 
+export type HttpResponseStream = {
+  onHeaders: (response: {
+    statusCode: number;
+    headers: Record<string, string>;
+    url: string;
+  }) => void;
+  onChunk: (text: string) => void;
+};
+
 export type HttpRequestTimings = {
   phases: {
     dns: number;
@@ -64,6 +73,8 @@ export type HttpRequestOptions = {
   followRedirects?: boolean;
   /** Whether to propagate Set-Cookie -> Cookie across redirect hops (default true). */
   propagateCookiesOnRedirect?: boolean;
+  /** Live response callbacks, used only for opted-in streaming requests. */
+  onStream?: HttpResponseStream;
   /**
    * When true (default), each redirect hop may add cookies from the persistent jar for the
    * next URL (browser-like, with domain/path filtering via the jar).

@@ -459,6 +459,16 @@ GET https://example.com/{{FOO}} HTTP/1.1
   expect(block.operators[5]?.args).toBe(`"What is your name?" NAME`);
 });
 
+test("parser: accepts the keep-alive stream operator", async () => {
+  const doc = await getDocument(
+    "### Stream\n# @kulala-keep-alive-stream\nGET https://example.com",
+  );
+  expect(doc.blocks[0]?.errors).toEqual([]);
+  expect(doc.blocks[0]?.operators.map((operator) => operator.name)).toEqual([
+    "kulala-keep-alive-stream",
+  ]);
+});
+
 test("parser: parses kulala-openapi-explorer operator", async () => {
   const content = `### OpenAPI
 # @kulala-openapi-explorer

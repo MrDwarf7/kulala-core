@@ -1,5 +1,6 @@
 import type { KulalaScriptType } from "../parser/types/script";
 import type { KulalaResponseFormatOptions } from "./http-response-body";
+import type { WebSocketScriptMessage } from "../websocket/script-messages";
 
 /** Where captured script output came from (pre/post phase, directive site, optional callsite). */
 export type KulalaScriptConsoleOrigin = {
@@ -38,12 +39,36 @@ export type KulalaRequestSent = {
   body?: string;
 };
 
+export type KulalaHttpStreamEvent =
+  | {
+      type: "http-stream";
+      event: "headers";
+      blockName?: string;
+      status: number;
+      headers: Record<string, string>;
+      url: string;
+    }
+  | {
+      type: "http-stream";
+      event: "chunk";
+      blockName?: string;
+      data: string;
+    }
+  | {
+      type: "http-stream";
+      event: "error";
+      blockName?: string;
+      error: string;
+    };
+
 /** Returned for WEBSOCKET/WS/WSS - nvim starts a native WebSocket session via kulala-core. */
 export type KulalaWebSocketPlanResponse = {
   success: true;
   protocol: "websocket";
   url: string;
   initialMessage?: string;
+  messages?: WebSocketScriptMessage[];
+  timeoutMs?: number;
   request?: KulalaRequestSent;
   /** jq filter from `# @kulala-jq` (block overrides file header). */
   jqFilter?: string;
@@ -145,6 +170,8 @@ export type KulalaRequestErrorResponse = {
   scriptConsole?: KulalaScriptConsoleLine[];
   /** Pre-request script called `$kulala.request.abort()` - no HTTP request was sent. */
   aborted?: true;
+  /** User interruption stops the remaining document requests. */
+  cancelled?: true;
   /**
    * HTTP finished before the failure (JetBrains: response-handler script errors).
    * Response fields below are populated so the UI can still show the received response.
@@ -224,6 +251,8 @@ export type KulalaRunOptions = {
   jqFilter?: string;
   /** Stop running remaining requests after the first failure. */
   haltOnError?: boolean;
+  /** Receives live events only for requests with `# @kulala-keep-alive-stream`. */
+  onHttpStream?: (event: KulalaHttpStreamEvent) => void;
 };
 
 /** Response-like value passed to scripts (fetch Response or compatible). */

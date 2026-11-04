@@ -1,17 +1,23 @@
 import { writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { normalizeSentPayload } from "./display";
+import type { WebSocketScriptMessage } from "./script-messages";
 
 export type WebSocketConnectOptions = {
   url: string;
   body?: string;
   headers?: Record<string, string>;
+  messages?: WebSocketScriptMessage[];
+  /** Maximum milliseconds per server-message gate; omitted means no timeout. */
+  timeoutMs?: number;
 };
 
 type OutboundMessage =
   | { type: "ready" }
   | { type: "message"; data: string }
   | { type: "sent"; data: string }
+  | { type: "waiting"; remaining: number }
+  | { type: "script-done" }
   | { type: "error"; error: string }
   | { type: "closed"; code?: number };
 
@@ -145,7 +151,22 @@ export async function runWebSocketSession(
     const rl = createInterface({ input: process.stdin, terminal: false });
     let opened = false;
     let errorSent = false;
+    let finished = false;
     let handshakeError: Promise<void> | undefined;
+    type ActiveWebSocketWait = {
+      remaining: number;
+      resolve: (received: boolean) => void;
+      timer?: NodeJS.Timeout;
+    };
+    let activeWait: ActiveWebSocketWait | undefined;
+
+    const settleWait = (received: boolean) => {
+      if (!activeWait) return;
+      const wait = activeWait;
+      activeWait = undefined;
+      clearTimeout(wait.timer);
+      wait.resolve(received);
+    };
 
     const cleanup = () => {
       rl.close();
@@ -154,6 +175,18 @@ export async function runWebSocketSession(
       } catch {
         // ignore
       }
+    };
+
+    const finish = (code?: number) => {
+      if (finished) return;
+      finished = true;
+      settleWait(false);
+      cleanup();
+      writeOutbound({
+        type: "closed",
+        ...(code !== undefined ? { code } : {}),
+      });
+      resolve();
     };
 
     const emitHandshakeError = async (fallback: string): Promise<void> => {
@@ -172,15 +205,78 @@ export async function runWebSocketSession(
       writeOutbound({ type: "sent", data: normalizeSentPayload(data) });
     };
 
+    const waitForServer = (count: number): Promise<boolean> => {
+      const { promise, resolve: resolveWait } =
+        Promise.withResolvers<boolean>();
+      const wait: ActiveWebSocketWait = {
+        remaining: count,
+        resolve: resolveWait,
+      };
+      activeWait = wait;
+      writeOutbound({ type: "waiting", remaining: wait.remaining });
+
+      if (connect.timeoutMs !== undefined) {
+        let remainingMs = connect.timeoutMs;
+        const scheduleTimeout = () => {
+          const startedAt = performance.now();
+          const delay = Math.ceil(Math.min(remainingMs, 2_147_483_647));
+          wait.timer = setTimeout(() => {
+            if (activeWait !== wait) return;
+            remainingMs -= performance.now() - startedAt;
+            if (remainingMs > 0) {
+              scheduleTimeout();
+              return;
+            }
+            activeWait = undefined;
+            writeOutbound({
+              type: "error",
+              error: `WebSocket script timed out after ${connect.timeoutMs}ms waiting for server messages`,
+            });
+            wait.resolve(false);
+          }, delay);
+        };
+        scheduleTimeout();
+      }
+      return promise;
+    };
+
+    const runScript = async () => {
+      for (const message of connect.messages ?? []) {
+        if (finished) return;
+        if (message.waitForServer && message.waitForServer > 0) {
+          if (!(await waitForServer(message.waitForServer)) || finished) return;
+        }
+        sendPayload(message.data);
+      }
+      if (!finished) writeOutbound({ type: "script-done" });
+    };
+
     ws.addEventListener("open", () => {
       opened = true;
       writeOutbound({ type: "ready" });
-      if (connect.body && connect.body.trim()) {
-        sendPayload(connect.body);
+      if (connect.messages !== undefined) {
+        void runScript().catch((error: unknown) => {
+          writeOutbound({
+            type: "error",
+            error: error instanceof Error ? error.message : String(error),
+          });
+          finish();
+        });
+      } else if (connect.body && connect.body.trim()) {
+        try {
+          sendPayload(connect.body);
+        } catch (error) {
+          writeOutbound({
+            type: "error",
+            error: error instanceof Error ? error.message : String(error),
+          });
+          finish();
+        }
       }
     });
 
     ws.addEventListener("message", (ev) => {
+      if (finished) return;
       const data =
         typeof ev.data === "string"
           ? ev.data
@@ -188,13 +284,33 @@ export async function runWebSocketSession(
             ? new TextDecoder().decode(ev.data)
             : String(ev.data);
       writeOutbound({ type: "message", data });
+      if (activeWait) {
+        activeWait.remaining -= 1;
+        if (activeWait.remaining === 0) {
+          settleWait(true);
+        } else {
+          writeOutbound({ type: "waiting", remaining: activeWait.remaining });
+        }
+      }
     });
 
     ws.addEventListener("error", (ev) => {
-      handshakeError = emitHandshakeError(errorEventMessage(ev));
+      if (finished) return;
+      const message = errorEventMessage(ev);
+      if (opened) {
+        if (!errorSent) {
+          errorSent = true;
+          writeOutbound({ type: "error", error: message });
+        }
+        finish();
+        return;
+      }
+      handshakeError = emitHandshakeError(message);
+      void handshakeError.then(() => finish());
     });
 
     ws.addEventListener("close", (ev) => {
+      if (finished) return;
       void (async () => {
         if (!opened) {
           if (handshakeError) {
@@ -203,9 +319,7 @@ export async function runWebSocketSession(
             await emitHandshakeError(closeCodeHint(ev.code));
           }
         }
-        writeOutbound({ type: "closed", code: ev.code });
-        cleanup();
-        resolve();
+        finish(ev.code);
       })();
     });
 
@@ -215,9 +329,7 @@ export async function runWebSocketSession(
       try {
         const cmd = JSON.parse(trimmed) as { op?: string; data?: string };
         if (cmd.op === "close") {
-          ws.close();
-          cleanup();
-          resolve();
+          finish();
           return;
         }
         if (cmd.op === "send" && cmd.data != null) {

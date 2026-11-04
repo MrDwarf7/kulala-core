@@ -1,4 +1,5 @@
-> Personal recovery fork maintained by andycowan. See [RECOVERY.md](RECOVERY.md) for provenance, supported platforms and limitations.
+> [!NOTE]
+> They went closed source, so I forked it.
 
 <div align="center">
 
@@ -7,7 +8,7 @@
 # Kulala Core
 
 [![Made with love](assets/badge-made-with-love.svg)](https://github.com/mistweaverco/kulala-core/graphs/contributors)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/mistweaverco/kulala-core?style=for-the-badge)](https://github.com/mistweaverco/kulala-core/releases/latest)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/MrDwarf7/kulala-core?style=for-the-badge)](https://github.com/MrDwarf7/kulala-core/releases/latest)
 [![Development status)](assets/badge-development-status.svg)](https://github.com/orgs/mistweaverco/projects/3/views/1?filterQuery=repo%3Amistweaverco%2Fkulala-core)
 [![Discord](assets/badge-discord.svg)](https://mistweaverco.com/discord)
 
@@ -74,6 +75,23 @@ Supports JavaScript, Lua, and TypeScript for:
 Assertions, automated testing and reporting
 is compatible with the IntelliJ HTTP Client:
 
+## Build
+
+Requires Bun. From the repository root:
+
+```sh
+bun install --frozen-lockfile
+bun run build
+bun run smoke
+```
+
+The native executable is `packages/core/dist/kulala-core` (`.exe` on Windows).
+To include Neovim integration checks, pass the executable and plugin checkout:
+
+```sh
+bun run smoke packages/core/dist/kulala-core ../kulala.nvim
+```
+
 ## Usage
 
 ### Example .http files
@@ -93,6 +111,9 @@ then a pinned copy under the user cache (for example on Linux: `~/.local/share/k
 then **curl** on your `PATH`,
 then a one-time download of a pinned static build (SHA-256 verified) into that cache.
 You can override the data or cache root with `KULALA_CORE_DATA_DIR` / `KULALA_CORE_CACHE_DIR`.
+
+Live HTTP streams reject automatic cURL retries (`--retry` greater than zero):
+bytes already delivered to the client cannot be rewound between attempts.
 
 - **Published library** (`dist/`): the npm build sets `__KULALA_EMBED_CURL__=false`, so the package does **not** embed curl from the machine that ran `npm publish`.
 - **`bun build --compile`**: run `packages/core/scripts/generate-vendored-curl.ts` (optionally with `--target=bun-…` for cross-compiles) so the matching curl is present in the cache and embedded for that build, then compile with `--define __KULALA_EMBED_CURL__=true` and `--compile-autoload-package-json` (needed so request scripts can `require()` packages from the project's `node_modules`).
