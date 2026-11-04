@@ -1,15 +1,16 @@
 {
   "name": "@kulala/core",
   "version": "0.0.0",
+  "author": "MrDwarf7",
   "private": false,
-  "homepage": "https://github.com/mistweaverco/kulala-core#readme",
+  "homepage": "https://github.com/MrDwarf7/kulala-core#readme",
   "bugs": {
-    "url": "https://github.com/mistweaverco/kulala-core/issues"
+    "url": "https://github.com/MrDwarf7/kulala-core/issues"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mistweaverco/kulala-core.git"
+    "url": "git+https://github.com/MrDwarf7/kulala-core.git"
   },
   "files": [
     "dist",

@@ -59,13 +59,7 @@ reported by contacting an individual maintainer on:
 
 ### GitHub
 
-- @gorillamoe
-
-> (at `GitHub username` + `@github.com`).
-
-### Discord
-
-- gorillamoe
+- [@MrDwarf7](https://github.com/MrDwarf7)
 
 All complaints will be reviewed and investigated and will result in a response that
 is deemed necessary and appropriate to the circumstances. The project team is

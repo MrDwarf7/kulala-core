@@ -7,17 +7,15 @@
 
 # Kulala Core
 
-[![Made with love](assets/badge-made-with-love.svg)](https://github.com/mistweaverco/kulala-core/graphs/contributors)
+[Contributors](https://github.com/MrDwarf7/kulala-core/graphs/contributors)
 [![GitHub release (latest by date)](https://img.shields.io/github/v/release/MrDwarf7/kulala-core?style=for-the-badge)](https://github.com/MrDwarf7/kulala-core/releases/latest)
-[![Development status)](assets/badge-development-status.svg)](https://github.com/orgs/mistweaverco/projects/3/views/1?filterQuery=repo%3Amistweaverco%2Fkulala-core)
-[![Discord](assets/badge-discord.svg)](https://mistweaverco.com/discord)
 
 <p></p>
 
 Kulala is swahili for "rest" or "relax."
 
-API bridge that powers the
-[Kulala toolchain](https://kulala.app) and can be used as a standalone library.
+Backend for [kulala.nvim](https://github.com/MrDwarf7/kulala.nvim),
+also available as a standalone library.
 
 <p></p>
 

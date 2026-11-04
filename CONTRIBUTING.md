@@ -46,7 +46,7 @@ here are a few things we expect from you (and that you should expect from others
 ## How to contribute
 
 If you'd like to contribute,
-start by searching through the [pull requests](https://github.com/mistweaverco/kulala-core/pulls) to
+start by searching through the [pull requests](https://github.com/MrDwarf7/kulala-core/pulls) to
 see whether someone else has raised a similar idea or question.
 
 If you don't see your idea listed, and you think it fits into the goals of this guide, open a pull request.
@@ -68,16 +68,14 @@ please follow these configurations:
 - [eslint](./eslint.config.js)
 - [prettier](./.prettierrc.json)
 
-Most of them are automatically checked by the CI,
-so you don't need to worry about them.
+Run the relevant project checks before submitting changes.
 
 ## Community
 
 Discussions about the Kulala take place on:
 
-- This repository's [Issues](https://github.com/mistweaverco/kulala-core/issues) and
-  [Pull Requests](https://github.com/mistweaverco/kulala-core/pulls) sections
-- The [mistweaverco Discord server](https://mistweaverco.com/discord)
+- This repository's [Issues](https://github.com/MrDwarf7/kulala-core/issues) and
+  [Pull Requests](https://github.com/MrDwarf7/kulala-core/pulls) sections
 
 Anybody is welcome to join these conversations.
 
